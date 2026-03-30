@@ -99,11 +99,41 @@ with st.sidebar:
 def get_ticker_data(ticker, period, interval):
     try:
         t = yf.Ticker(ticker)
-        hist = t.history(period=period, interval=interval)
-        info = t.info
+        hist = t.history(period=period, interval=interval, auto_adjust=True, actions=False)
+
+        if hist is None or hist.empty:
+            # Retry once with a slightly different interval
+            fallback_interval = "1d" if interval in ["5m", "15m", "30m"] else interval
+            hist = t.history(period=period, interval=fallback_interval, auto_adjust=True, actions=False)
+
+        if hist is None or hist.empty:
+            return None, {}, f"No price data returned for '{ticker}'. It may be delisted or the symbol is incorrect."
+
+        # Try fast_info first (more reliable), fall back to info
+        try:
+            fi = t.fast_info
+            info = {
+                "shortName": getattr(fi, "currency", ticker),
+                "previousClose": getattr(fi, "previous_close", None),
+                "marketCap": getattr(fi, "market_cap", None),
+                "fiftyTwoWeekHigh": getattr(fi, "year_high", None),
+                "fiftyTwoWeekLow": getattr(fi, "year_low", None),
+                "exchange": getattr(fi, "exchange", ""),
+            }
+            # Try to merge with full info (may fail on some tickers)
+            try:
+                full_info = t.info
+                if full_info and isinstance(full_info, dict) and full_info.get("shortName"):
+                    info.update(full_info)
+            except Exception:
+                pass
+        except Exception:
+            info = {}
+
         return hist, info, None
+
     except Exception as e:
-        return None, None, str(e)
+        return None, {}, str(e)
 
 @st.cache_data(ttl=300)
 def get_news(ticker):
@@ -137,7 +167,10 @@ def compute_bollinger(series, window=20):
 hist, info, error = get_ticker_data(ticker_input, period, interval)
 
 if error or hist is None or hist.empty:
-    st.error(f"❌ Could not load data for **{ticker_input}**. Check the ticker symbol and try again.")
+    st.error(f"❌ Could not load data for **{ticker_input}**.")
+    if error:
+        st.caption(f"Details: {error}")
+    st.info("💡 Tips: Make sure the ticker is correct (e.g. `GOOGL`, `MSFT`, `TSLA`). For indices try `^GSPC` (S&P 500) or `^IXIC` (NASDAQ). If it keeps failing, click **Refresh Data** in the sidebar.")
     st.stop()
 
 # Header
@@ -313,3 +346,4 @@ with col_news:
 # ─── Footer ───────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · Data via Yahoo Finance · Not financial advice")
+    
